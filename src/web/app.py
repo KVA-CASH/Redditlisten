@@ -101,6 +101,12 @@ def get_pain_stats() -> Dict:
 # API ROUTES
 # ============================================================================
 
+@app.route('/health')
+def health():
+    """Health check endpoint for Railway."""
+    return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
+
+
 @app.route('/')
 def index():
     """Main dashboard page."""
@@ -198,13 +204,13 @@ def broadcast_pain_point(pain_data: dict):
 # SERVER RUNNER
 # ============================================================================
 
-def run_server(host: str = '127.0.0.1', port: int = 5000, debug: bool = False):
+def run_server(host: str = '0.0.0.0', port: int = 5000, debug: bool = False):
     """Run the Flask-SocketIO server."""
     logger.info(f"Starting dashboard server at http://{host}:{port}")
     socketio.run(app, host=host, port=port, debug=debug, allow_unsafe_werkzeug=True)
 
 
-def run_server_background(host: str = '127.0.0.1', port: int = 5000) -> Thread:
+def run_server_background(host: str = '0.0.0.0', port: int = 5000) -> Thread:
     """Run server in a background thread."""
     thread = Thread(target=run_server, args=(host, port, False), daemon=True)
     thread.start()

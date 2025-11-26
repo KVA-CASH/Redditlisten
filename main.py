@@ -231,17 +231,19 @@ def run_listener(port: int = 8080) -> None:
     print_status_config(port=port)
     validate_and_warn()
 
-    # Start web dashboard
-    console.print(f"[bold green]🌐 Starting web dashboard at http://localhost:{port}[/bold green]")
+    # Start web dashboard FIRST for Railway healthcheck
+    console.print(f"[bold green]🌐 Starting web dashboard at http://0.0.0.0:{port}[/bold green]")
     run_server_background(port=port)
 
-    # Open browser
-    import webbrowser
-    from threading import Thread
-    def open_browser():
-        time.sleep(1.5)
-        webbrowser.open(f'http://localhost:{port}')
-    Thread(target=open_browser, daemon=True).start()
+    # Open browser only if running locally (not on Railway)
+    import os
+    if not os.getenv('RAILWAY_ENVIRONMENT'):
+        import webbrowser
+        from threading import Thread
+        def open_browser():
+            time.sleep(1.5)
+            webbrowser.open(f'http://localhost:{port}')
+        Thread(target=open_browser, daemon=True).start()
 
     # Initialize pain logger
     pain_logger = PainLogger()
