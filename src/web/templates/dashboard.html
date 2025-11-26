@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reddit Pain Point Listener - Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .gradient-bg { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); }
+        .card { background: rgba(255,255,255,0.05); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); }
+        .glow { box-shadow: 0 0 20px rgba(59, 130, 246, 0.3); }
+        .trend-up { color: #22c55e; }
+        .trend-down { color: #ef4444; }
+        .trend-neutral { color: #94a3b8; }
+        .pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+        .niche-sweaty { border-left: 4px solid #eab308; }
+        .niche-agency { border-left: 4px solid #06b6d4; }
+        .niche-ecommerce { border-left: 4px solid #d946ef; }
+        .niche-content { border-left: 4px solid #22c55e; }
+        .niche-recruiters { border-left: 4px solid #3b82f6; }
+    </style>
+</head>
+<body class="gradient-bg min-h-screen text-white">
+    <!-- Header -->
+    <header class="border-b border-white/10 px-6 py-4">
+        <div class="max-w-7xl mx-auto flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <span class="text-2xl">🔍</span>
+                <h1 class="text-xl font-bold">Reddit Pain Point Listener</h1>
+                <span id="connection-status" class="ml-4 px-2 py-1 text-xs rounded-full bg-yellow-500/20 text-yellow-400">
+                    Connecting...
+                </span>
+            </div>
+            <div class="flex items-center gap-4">
+                <select id="period-select" class="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm">
+                    <option value="1">Last 24 hours</option>
+                    <option value="7" selected>Last 7 days</option>
+                    <option value="30">Last 30 days</option>
+                </select>
+                <button onclick="refreshData()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm font-medium transition">
+                    Refresh
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-6 py-8">
+        <!-- Stats Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+            <div class="card rounded-xl p-6">
+                <div class="text-sm text-gray-400 mb-1">Total Posts</div>
+                <div id="stat-total" class="text-3xl font-bold">-</div>
+            </div>
+            <div class="card rounded-xl p-6">
+                <div class="text-sm text-gray-400 mb-1">Today's Matches</div>
+                <div id="stat-today" class="text-3xl font-bold text-green-400">-</div>
+            </div>
+            <div class="card rounded-xl p-6">
+                <div class="text-sm text-gray-400 mb-1">Top Trending</div>
+                <div id="stat-trending" class="text-xl font-bold text-yellow-400 truncate">-</div>
+            </div>
+            <div class="card rounded-xl p-6">
+                <div class="text-sm text-gray-400 mb-1">Active Niches</div>
+                <div id="stat-niches" class="text-3xl font-bold text-purple-400">5</div>
+            </div>
+        </div>
+
+        <!-- Main Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+            <!-- Top Pain Points -->
+            <div class="card rounded-xl p-6 lg:col-span-2">
+                <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
+                    🎯 Top Pain Points
+                    <span class="text-xs text-gray-400 font-normal">(Click to explore)</span>
+                </h2>
+                <div id="keywords-list" class="space-y-2">
+                    <div class="text-gray-400 text-sm">Loading...</div>
+                </div>
+            </div>
+
+            <!-- Trending Now -->
+            <div class="card rounded-xl p-6">
+                <h2 class="text-lg font-semibold mb-4">🔥 Trending Now</h2>
+                <div id="trending-list" class="space-y-3">
+                    <div class="text-gray-400 text-sm">Loading...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Charts Row -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+            <!-- Niche Distribution -->
+            <div class="card rounded-xl p-6">
+                <h2 class="text-lg font-semibold mb-4">🏷️ Niche Distribution</h2>
+                <canvas id="niche-chart" height="200"></canvas>
+            </div>
+
+            <!-- Activity Timeline -->
+            <div class="card rounded-xl p-6">
+                <h2 class="text-lg font-semibold mb-4">📊 Hourly Activity</h2>
+                <canvas id="hourly-chart" height="200"></canvas>
+            </div>
+        </div>
+
+        <!-- Recommendations & Recent Posts -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+            <!-- Recommendations -->
+            <div class="card rounded-xl p-6">
+                <h2 class="text-lg font-semibold mb-4">💡 Recommendations</h2>
+                <div id="recommendations-list" class="space-y-4">
+                    <div class="text-gray-400 text-sm">Loading...</div>
+                </div>
+            </div>
+
+            <!-- Recent Posts -->
+            <div class="card rounded-xl p-6">
+                <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
+                    📝 Recent Matches
+                    <span id="live-indicator" class="w-2 h-2 bg-green-500 rounded-full pulse"></span>
+                </h2>
+                <div id="posts-list" class="space-y-3 max-h-96 overflow-y-auto">
+                    <div class="text-gray-400 text-sm">Loading...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Historical Keywords Browser -->
+        <div class="card rounded-xl p-6">
+            <h2 class="text-lg font-semibold mb-4">📚 Historical Keyword Browser</h2>
+            <div class="flex gap-4 mb-4">
+                <input type="text" id="keyword-search" placeholder="Search keywords..."
+                    class="flex-1 bg-white/10 border border-white/20 rounded-lg px-4 py-2 text-sm">
+                <select id="keyword-sort" class="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm">
+                    <option value="count">Sort by Count</option>
+                    <option value="trend">Sort by Trend</option>
+                    <option value="alpha">Alphabetical</option>
+                </select>
+            </div>
+            <div id="historical-keywords" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                <div class="text-gray-400 text-sm">Loading...</div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Post Detail Modal -->
+    <div id="post-modal" class="fixed inset-0 bg-black/80 hidden items-center justify-center z-50">
+        <div class="card rounded-xl p-6 max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+            <div class="flex justify-between items-start mb-4">
+                <h3 id="modal-title" class="text-xl font-bold pr-4"></h3>
+                <button onclick="closeModal()" class="text-gray-400 hover:text-white">✕</button>
+            </div>
+            <div id="modal-content"></div>
+        </div>
+    </div>
+
+    <script>
+        // State
+        let socket;
+        let charts = {};
+        let allKeywords = [];
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            initSocket();
+            refreshData();
+            setupEventListeners();
+        });
+
+        // Socket.IO Connection
+        function initSocket() {
+            socket = io();
+
+            socket.on('connect', () => {
+                document.getElementById('connection-status').innerHTML =
+                    '<span class="text-green-400">● Live</span>';
+                document.getElementById('connection-status').className =
+                    'ml-4 px-2 py-1 text-xs rounded-full bg-green-500/20';
+            });
+
+            socket.on('disconnect', () => {
+                document.getElementById('connection-status').innerHTML =
+                    '<span class="text-red-400">● Disconnected</span>';
+                document.getElementById('connection-status').className =
+                    'ml-4 px-2 py-1 text-xs rounded-full bg-red-500/20';
+            });
+
+            socket.on('new_post', (data) => {
+                addNewPost(data.post);
+                refreshData(); // Refresh stats
+            });
+
+            socket.on('stats_update', (data) => {
+                updateStats(data);
+            });
+        }
+
+        // Event Listeners
+        function setupEventListeners() {
+            document.getElementById('period-select').addEventListener('change', refreshData);
+            document.getElementById('keyword-search').addEventListener('input', filterKeywords);
+            document.getElementById('keyword-sort').addEventListener('change', filterKeywords);
+        }
+
+        // Data Fetching
+        async function refreshData() {
+            const days = document.getElementById('period-select').value;
+
+            try {
+                const [statsRes, keywordsRes, recsRes, postsRes] = await Promise.all([
+                    fetch(`/api/stats?days=${days}`),
+                    fetch(`/api/keywords?days=${days}&limit=50`),
+                    fetch(`/api/recommendations?days=${days}`),
+                    fetch(`/api/posts?hours=${days * 24}&limit=20`),
+                ]);
+
+                const stats = await statsRes.json();
+                const keywords = await keywordsRes.json();
+                const recs = await recsRes.json();
+                const posts = await postsRes.json();
+
+                updateDashboard(stats, keywords, recs, posts);
+            } catch (error) {
+                console.error('Error fetching data:', error);
+            }
+        }
+
+        // Update Functions
+        function updateDashboard(stats, keywords, recs, posts) {
+            // Stats cards
+            document.getElementById('stat-total').textContent = stats.total_posts.toLocaleString();
+            document.getElementById('stat-today').textContent = stats.trending.reduce((sum, t) => sum + t.recent_count, 0);
+            document.getElementById('stat-trending').textContent = stats.trending[0]?.keyword || 'N/A';
+
+            // Keywords list
+            updateKeywordsList(stats.keywords);
+
+            // Trending list
+            updateTrendingList(stats.trending);
+
+            // Charts
+            updateNicheChart(stats.niches);
+            updateHourlyChart(stats.hourly);
+
+            // Recommendations
+            updateRecommendations(recs.recommendations, recs.insights);
+
+            // Posts
+            updatePostsList(posts.posts);
+
+            // Historical keywords
+            allKeywords = keywords.keywords;
+            filterKeywords();
+        }
+
+        function updateKeywordsList(keywords) {
+            const container = document.getElementById('keywords-list');
+            if (!keywords.length) {
+                container.innerHTML = '<div class="text-gray-400 text-sm">No data yet</div>';
+                return;
+            }
+
+            const maxCount = keywords[0]?.count || 1;
+            container.innerHTML = keywords.slice(0, 10).map((k, i) => {
+                const width = (k.count / maxCount) * 100;
+                return `
+                    <div class="relative bg-white/5 rounded-lg p-3 cursor-pointer hover:bg-white/10 transition"
+                         onclick="showKeywordDetail('${k.keyword}')">
+                        <div class="absolute inset-0 bg-blue-500/20 rounded-lg" style="width: ${width}%"></div>
+                        <div class="relative flex justify-between items-center">
+                            <span class="font-medium">${i + 1}. ${k.keyword}</span>
+                            <span class="text-sm text-gray-400">${k.count} mentions</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateTrendingList(trending) {
+            const container = document.getElementById('trending-list');
+            if (!trending.length) {
+                container.innerHTML = '<div class="text-gray-400 text-sm">Not enough data yet</div>';
+                return;
+            }
+
+            container.innerHTML = trending.slice(0, 5).map(t => {
+                const trendClass = t.trend_score > 2 ? 'trend-up' : t.trend_score < 0.5 ? 'trend-down' : 'trend-neutral';
+                const icon = t.trend_score > 2 ? '🔥' : t.trend_score < 0.5 ? '📉' : '➡️';
+                return `
+                    <div class="flex items-center justify-between p-2 bg-white/5 rounded-lg">
+                        <span class="font-medium">${icon} ${t.keyword}</span>
+                        <span class="${trendClass} text-sm font-bold">${t.trend_score}x</span>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateNicheChart(niches) {
+            const ctx = document.getElementById('niche-chart').getContext('2d');
+
+            if (charts.niche) charts.niche.destroy();
+
+            const colors = {
+                'Sweaty_Startup': '#eab308',
+                'Agency_Owners': '#06b6d4',
+                'Ecommerce_Ops': '#d946ef',
+                'Content_Creators': '#22c55e',
+                'Recruiters': '#3b82f6',
+            };
+
+            charts.niche = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: niches.map(n => n.niche.replace('_', ' ')),
+                    datasets: [{
+                        data: niches.map(n => n.count),
+                        backgroundColor: niches.map(n => colors[n.niche] || '#64748b'),
+                        borderWidth: 0,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            position: 'right',
+                            labels: { color: '#fff', font: { size: 11 } }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateHourlyChart(hourly) {
+            const ctx = document.getElementById('hourly-chart').getContext('2d');
+
+            if (charts.hourly) charts.hourly.destroy();
+
+            const hours = Array.from({length: 24}, (_, i) => i);
+            const data = hours.map(h => hourly[h] || 0);
+
+            charts.hourly = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: hours.map(h => `${h}:00`),
+                    datasets: [{
+                        label: 'Posts',
+                        data: data,
+                        backgroundColor: 'rgba(59, 130, 246, 0.5)',
+                        borderColor: 'rgba(59, 130, 246, 1)',
+                        borderWidth: 1,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        x: { ticks: { color: '#94a3b8' }, grid: { display: false } },
+                        y: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(255,255,255,0.1)' } }
+                    },
+                    plugins: {
+                        legend: { display: false }
+                    }
+                }
+            });
+        }
+
+        function updateRecommendations(recommendations, insights) {
+            const container = document.getElementById('recommendations-list');
+
+            if (!recommendations.length && !insights.length) {
+                container.innerHTML = '<div class="text-gray-400 text-sm">Collect more data to see recommendations</div>';
+                return;
+            }
+
+            let html = '';
+
+            // Recommendations
+            recommendations.slice(0, 3).forEach(r => {
+                const confidenceBars = '●'.repeat(Math.round(r.confidence * 5)) + '○'.repeat(5 - Math.round(r.confidence * 5));
+                html += `
+                    <div class="p-3 bg-white/5 rounded-lg border-l-4 border-blue-500">
+                        <div class="flex items-center gap-2 mb-1">
+                            <span>${r.trend}</span>
+                            <span class="font-bold">${r.pain_point}</span>
+                        </div>
+                        <div class="text-xs text-gray-400 mb-2">
+                            ${r.niche.replace('_', ' ')} • ${r.frequency} mentions • ${confidenceBars}
+                        </div>
+                        <div class="text-sm text-gray-300">${r.action}</div>
+                    </div>
+                `;
+            });
+
+            // Insights
+            if (insights.length) {
+                html += '<div class="mt-4 pt-4 border-t border-white/10">';
+                html += '<div class="text-sm font-semibold text-gray-400 mb-3">Key Insights</div>';
+                insights.slice(0, 2).forEach(i => {
+                    html += `
+                        <div class="text-sm mb-2">
+                            <span class="font-medium">${i.title}</span>
+                            <span class="text-gray-400"> - ${i.description}</span>
+                        </div>
+                    `;
+                });
+                html += '</div>';
+            }
+
+            container.innerHTML = html;
+        }
+
+        function updatePostsList(posts) {
+            const container = document.getElementById('posts-list');
+
+            if (!posts.length) {
+                container.innerHTML = '<div class="text-gray-400 text-sm">No posts captured yet</div>';
+                return;
+            }
+
+            const nicheClasses = {
+                'Sweaty_Startup': 'niche-sweaty',
+                'Agency_Owners': 'niche-agency',
+                'Ecommerce_Ops': 'niche-ecommerce',
+                'Content_Creators': 'niche-content',
+                'Recruiters': 'niche-recruiters',
+            };
+
+            container.innerHTML = posts.map(p => `
+                <div class="p-3 bg-white/5 rounded-lg ${nicheClasses[p.niche] || ''} cursor-pointer hover:bg-white/10 transition"
+                     onclick="showPostDetail(${JSON.stringify(p).replace(/"/g, '&quot;')})">
+                    <div class="text-sm font-medium truncate">${p.title}</div>
+                    <div class="text-xs text-gray-400 mt-1">
+                        r/${p.subreddit} • ${p.captured_at?.slice(0, 16) || 'Unknown'}
+                    </div>
+                    <div class="text-xs text-blue-400 mt-1">
+                        ${p.keywords || 'No keywords'}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function addNewPost(post) {
+            const container = document.getElementById('posts-list');
+            const nicheClasses = {
+                'Sweaty_Startup': 'niche-sweaty',
+                'Agency_Owners': 'niche-agency',
+                'Ecommerce_Ops': 'niche-ecommerce',
+                'Content_Creators': 'niche-content',
+                'Recruiters': 'niche-recruiters',
+            };
+
+            const newPostHtml = `
+                <div class="p-3 bg-green-500/20 rounded-lg ${nicheClasses[post.niche] || ''} animate-pulse"
+                     onclick="showPostDetail(${JSON.stringify(post).replace(/"/g, '&quot;')})">
+                    <div class="text-sm font-medium truncate">🆕 ${post.title}</div>
+                    <div class="text-xs text-gray-400 mt-1">
+                        r/${post.subreddit} • Just now
+                    </div>
+                </div>
+            `;
+
+            container.insertAdjacentHTML('afterbegin', newPostHtml);
+
+            // Remove animation after 3 seconds
+            setTimeout(() => {
+                const firstPost = container.firstElementChild;
+                if (firstPost) {
+                    firstPost.classList.remove('bg-green-500/20', 'animate-pulse');
+                    firstPost.classList.add('bg-white/5');
+                }
+            }, 3000);
+        }
+
+        function filterKeywords() {
+            const search = document.getElementById('keyword-search').value.toLowerCase();
+            const sort = document.getElementById('keyword-sort').value;
+            const container = document.getElementById('historical-keywords');
+
+            let filtered = allKeywords.filter(k => k.keyword.toLowerCase().includes(search));
+
+            // Sort
+            if (sort === 'count') {
+                filtered.sort((a, b) => b.count - a.count);
+            } else if (sort === 'trend') {
+                filtered.sort((a, b) => b.trend_score - a.trend_score);
+            } else {
+                filtered.sort((a, b) => a.keyword.localeCompare(b.keyword));
+            }
+
+            if (!filtered.length) {
+                container.innerHTML = '<div class="text-gray-400 text-sm col-span-full">No keywords found</div>';
+                return;
+            }
+
+            container.innerHTML = filtered.map(k => {
+                const trendColor = k.trend_score > 2 ? 'bg-green-500/20 border-green-500' :
+                                   k.trend_score < 0.5 ? 'bg-red-500/20 border-red-500' :
+                                   'bg-white/5 border-white/20';
+                return `
+                    <div class="p-3 rounded-lg border ${trendColor} cursor-pointer hover:scale-105 transition"
+                         onclick="showKeywordDetail('${k.keyword}')">
+                        <div class="font-medium text-sm truncate">${k.keyword}</div>
+                        <div class="text-xs text-gray-400 mt-1">${k.count} total • ${k.trend_score}x trend</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Modal Functions
+        function showPostDetail(post) {
+            document.getElementById('modal-title').textContent = post.title;
+            document.getElementById('modal-content').innerHTML = `
+                <div class="space-y-4">
+                    <div class="flex flex-wrap gap-2">
+                        <span class="px-2 py-1 bg-blue-500/20 rounded text-sm">r/${post.subreddit}</span>
+                        <span class="px-2 py-1 bg-purple-500/20 rounded text-sm">${post.niche?.replace('_', ' ')}</span>
+                        <span class="px-2 py-1 bg-green-500/20 rounded text-sm">u/${post.author}</span>
+                    </div>
+                    ${post.selftext ? `<div class="text-gray-300 text-sm">${post.selftext}</div>` : ''}
+                    <div class="text-sm text-gray-400">
+                        <strong>Keywords:</strong> ${post.keywords || 'None'}
+                    </div>
+                    <div class="text-sm text-gray-400">
+                        <strong>Captured:</strong> ${post.captured_at || 'Unknown'}
+                    </div>
+                    <a href="${post.full_url}" target="_blank"
+                       class="inline-block mt-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm transition">
+                        Open on Reddit →
+                    </a>
+                </div>
+            `;
+            document.getElementById('post-modal').classList.remove('hidden');
+            document.getElementById('post-modal').classList.add('flex');
+        }
+
+        async function showKeywordDetail(keyword) {
+            document.getElementById('modal-title').textContent = `Keyword: "${keyword}"`;
+            document.getElementById('modal-content').innerHTML = '<div class="text-gray-400">Loading...</div>';
+            document.getElementById('post-modal').classList.remove('hidden');
+            document.getElementById('post-modal').classList.add('flex');
+
+            // Fetch posts with this keyword
+            const days = document.getElementById('period-select').value;
+            const res = await fetch(`/api/posts?hours=${days * 24}&limit=50`);
+            const data = await res.json();
+
+            const matchingPosts = data.posts.filter(p =>
+                p.keywords?.toLowerCase().includes(keyword.toLowerCase())
+            );
+
+            document.getElementById('modal-content').innerHTML = `
+                <div class="space-y-4">
+                    <div class="text-gray-400">
+                        Found in <strong>${matchingPosts.length}</strong> posts
+                    </div>
+                    <div class="space-y-2 max-h-96 overflow-y-auto">
+                        ${matchingPosts.map(p => `
+                            <div class="p-3 bg-white/5 rounded-lg">
+                                <div class="font-medium text-sm">${p.title}</div>
+                                <div class="text-xs text-gray-400 mt-1">
+                                    r/${p.subreddit} • ${p.captured_at?.slice(0, 16) || 'Unknown'}
+                                </div>
+                                <a href="${p.full_url}" target="_blank" class="text-xs text-blue-400 hover:underline">
+                                    View on Reddit →
+                                </a>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        function closeModal() {
+            document.getElementById('post-modal').classList.add('hidden');
+            document.getElementById('post-modal').classList.remove('flex');
+        }
+
+        // Close modal on outside click
+        document.getElementById('post-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'post-modal') closeModal();
+        });
+
+        // Escape key to close modal
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeModal();
+        });
+    </script>
+</body>
+</html>

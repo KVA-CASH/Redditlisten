@@ -1,0 +1,32 @@
+# Reddit Pain Point Listener - Smart Sentiment Analysis
+# Python 3.9+ required
+
+# RSS Parsing
+feedparser>=6.0.10
+
+# HTTP Requests with custom headers
+requests>=2.31.0
+
+# Console Output
+rich>=13.7.0
+
+# Environment & Configuration
+python-dotenv>=1.0.0
+
+# Web Dashboard
+flask>=3.0.0
+flask-socketio>=5.3.6
+
+# ============================================
+# NEW: Smart Pain Point Analysis
+# ============================================
+
+# HTML Cleaning (Reddit RSS contains HTML)
+beautifulsoup4>=4.12.0
+lxml>=5.1.0  # Fast HTML parser for BeautifulSoup
+
+# Sentiment Analysis (VADER - tuned for social media)
+vaderSentiment>=3.3.2
+
+# Natural Language Processing (sentence splitting)
+nltk>=3.8.1
