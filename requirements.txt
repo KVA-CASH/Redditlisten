@@ -17,6 +17,9 @@ python-dotenv>=1.0.0
 flask>=3.0.0
 flask-socketio>=5.3.6
 
+# Database
+psycopg2-binary>=2.9.9
+
 # ============================================
 # NEW: Smart Pain Point Analysis
 # ============================================

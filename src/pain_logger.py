@@ -1,20 +1,20 @@
 """
-Pain Logger Module - CSV and Console Output for Pain Points.
+Pain Logger Module - Database and Console Output for Pain Points.
 
 Handles:
-1. CSV file logging with proper escaping
-2. Rich console alerts with color-coded severity
-3. Thread-safe file operations
+1. Database logging (PostgreSQL/SQLite)
+2. CSV file logging (Legacy/Backup)
+3. Rich console alerts with color-coded severity
 """
 
 import csv
 import logging
 import os
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Any, Dict
 
 from rich.console import Console
 from rich.panel import Panel
@@ -23,6 +23,7 @@ from rich.text import Text
 from rich import box
 
 from .pain_analyzer import PainPoint
+from .storage import PostStorage
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -31,9 +32,9 @@ console = Console()
 _file_lock = threading.Lock()
 
 
-# ============================================================================
+# ============================================================================ 
 # CONFIGURATION
-# ============================================================================
+# ============================================================================ 
 
 DEFAULT_CSV_PATH = "data/pain_points.csv"
 
@@ -51,9 +52,9 @@ CSV_COLUMNS = [
 ]
 
 
-# ============================================================================
+# ============================================================================ 
 # DATA CLASSES
-# ============================================================================
+# ============================================================================ 
 
 @dataclass
 class PainLogEntry:
@@ -69,6 +70,21 @@ class PainLogEntry:
     post_title: str
     author: str
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for DB storage."""
+        return {
+            "timestamp": self.timestamp,
+            "niche": self.niche,
+            "subreddit": self.subreddit,
+            "keyword": self.keyword,
+            "pain_score": self.pain_score,
+            "severity": self.severity,
+            "context_snippet": self.context_snippet,
+            "reddit_url": self.reddit_url,
+            "post_title": self.post_title,
+            "author": self.author
+        }
+
     def to_csv_row(self) -> List[str]:
         """Convert to CSV row."""
         return [
@@ -78,20 +94,20 @@ class PainLogEntry:
             self.keyword,
             f"{self.pain_score:.3f}",
             self.severity,
-            self.context_snippet.replace('\n', ' '),  # Single line
+            self.context_snippet.replace('\n', ' '),
             self.reddit_url,
-            self.post_title[:100],  # Truncate title
+            self.post_title[:100],
             self.author
         ]
 
 
-# ============================================================================
+# ============================================================================ 
 # PAIN LOGGER CLASS
-# ============================================================================
+# ============================================================================ 
 
 class PainLogger:
     """
-    Logs pain points to CSV and displays Rich console alerts.
+    Logs pain points to Database/CSV and displays Rich console alerts.
     """
 
     def __init__(self, csv_path: str = DEFAULT_CSV_PATH):
@@ -104,6 +120,10 @@ class PainLogger:
         self.csv_path = Path(csv_path)
         self._ensure_csv_exists()
         self._log_count = 0
+        
+        # Initialize Storage (DB)
+        self.storage = PostStorage()
+        
         logger.info(f"PainLogger initialized: {self.csv_path}")
 
     def _ensure_csv_exists(self) -> None:
@@ -126,7 +146,7 @@ class PainLogger:
         author: str = "unknown"
     ) -> PainLogEntry:
         """
-        Log a single pain point to CSV and console.
+        Log a single pain point to DB, CSV and console.
 
         Args:
             pain_point: The PainPoint object
@@ -152,10 +172,13 @@ class PainLogger:
             author=author
         )
 
-        # Write to CSV (thread-safe)
+        # 1. Save to Database (Primary Storage)
+        self.storage.save_pain_point(entry.to_dict())
+
+        # 2. Write to CSV (Backup/Local)
         self._write_to_csv(entry)
 
-        # Display console alert
+        # 3. Display console alert
         self._display_alert(entry)
 
         self._log_count += 1
@@ -283,7 +306,7 @@ class PainLogger:
         return self._log_count
 
     def get_csv_stats(self) -> dict:
-        """Get statistics from the CSV file."""
+        """Get statistics from the CSV file (legacy/local stats)."""
         stats = {
             "total_entries": 0,
             "by_niche": {},
@@ -319,9 +342,9 @@ class PainLogger:
         return stats
 
 
-# ============================================================================
+# ============================================================================ 
 # UTILITY FUNCTIONS
-# ============================================================================
+# ============================================================================ 
 
 def get_pain_logger(csv_path: str = DEFAULT_CSV_PATH) -> PainLogger:
     """Get a singleton PainLogger instance."""

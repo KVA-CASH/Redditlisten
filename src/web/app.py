@@ -4,19 +4,21 @@ Web Dashboard Server - Flask + SocketIO for real-time Pain Point tracking.
 
 import csv
 import os
+import io
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Thread
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, make_response
 from flask_socketio import SocketIO, emit
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.config import NICHES
+from src.storage import PostStorage
 
 logger = logging.getLogger(__name__)
 
@@ -29,35 +31,26 @@ app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', 'reddit-listener-secret
 # Initialize SocketIO
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
-# CSV path
-CSV_PATH = Path("data/pain_points.csv")
+# Initialize Storage
+storage = PostStorage()
 
 
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
 
-def read_pain_points(limit: int = 100) -> List[Dict]:
-    """Read pain points from CSV file."""
-    if not CSV_PATH.exists():
-        return []
-
-    rows = []
+def get_pain_points_data(limit: int = 1000) -> List[Dict[str, Any]]:
+    """Fetch pain points from database."""
     try:
-        with open(CSV_PATH, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            rows = list(reader)
+        return storage.get_all_pain_points(limit=limit)
     except Exception as e:
-        logger.error(f"Error reading CSV: {e}")
+        logger.error(f"Error reading from DB: {e}")
         return []
-
-    # Return most recent first
-    return list(reversed(rows[-limit:]))
 
 
 def get_pain_stats() -> Dict:
-    """Calculate statistics from pain points CSV."""
-    rows = read_pain_points(limit=10000)
+    """Calculate statistics from pain points data."""
+    rows = get_pain_points_data(limit=10000)
 
     if not rows:
         return {
@@ -113,6 +106,35 @@ def index():
     return render_template('pain_dashboard.html', niches=NICHES)
 
 
+@app.route('/download-data')
+def download_data():
+    """Download all pain points as CSV."""
+    data = get_pain_points_data(limit=10000)
+    
+    if not data:
+        return "No data available", 404
+
+    # Create CSV in memory
+    si = io.StringIO()
+    cw = csv.writer(si)
+    
+    # Headers
+    headers = ["timestamp", "niche", "subreddit", "keyword", "pain_score", 
+               "severity", "context_snippet", "reddit_url", "post_title", "author"]
+    cw.writerow(headers)
+    
+    # Rows
+    for row in data:
+        cw.writerow([
+            row.get(h, "") for h in headers
+        ])
+        
+    output = make_response(si.getvalue())
+    output.headers["Content-Disposition"] = f"attachment; filename=pain_points_{datetime.now().strftime('%Y%m%d')}.csv"
+    output.headers["Content-type"] = "text/csv"
+    return output
+
+
 @app.route('/api/stats')
 def api_stats():
     """Get overall statistics."""
@@ -140,7 +162,7 @@ def api_pain_points():
     severity = request.args.get('severity', None)
     niche = request.args.get('niche', None)
 
-    rows = read_pain_points(limit=500)
+    rows = get_pain_points_data(limit=500)
 
     # Filter
     if severity:
@@ -157,7 +179,7 @@ def api_pain_points():
 @app.route('/api/severe')
 def api_severe():
     """Get only severe pain points."""
-    rows = read_pain_points(limit=500)
+    rows = get_pain_points_data(limit=500)
     severe = [r for r in rows if r.get('severity') == 'SEVERE']
     return jsonify({
         'pain_points': severe[:50],

@@ -75,6 +75,7 @@ MAX_SEEN_POSTS: int = int(os.getenv("MAX_SEEN_POSTS", "10000"))
 
 # Database path (for analytics)
 DB_PATH: str = os.getenv("DB_PATH", "data/reddit_listener.db")
+DATABASE_URL: str = os.getenv("DATABASE_URL", "")
 
 # Logging
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

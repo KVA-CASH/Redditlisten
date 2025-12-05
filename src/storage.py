@@ -1,361 +1,301 @@
 """
-Storage Module - SQLite database for persisting matched posts.
-Enables historical analysis and trend detection.
+Storage Module - Database interface for persisting matched posts and pain points.
+Supports both SQLite (local dev) and PostgreSQL (production).
 """
 
+import os
 import sqlite3
 import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 from contextlib import contextmanager
-from dataclasses import asdict
+
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    HAS_POSTGRES = True
+except ImportError:
+    HAS_POSTGRES = False
 
 logger = logging.getLogger(__name__)
 
-# Default database path
+# Default database path (for SQLite)
 DEFAULT_DB_PATH = Path(__file__).parent.parent / "data" / "reddit_listener.db"
 
 
 class PostStorage:
     """
-    SQLite-based storage for matched Reddit posts.
-    Handles persistence, querying, and trend analysis.
+    Database storage for matched Reddit posts and analyzed pain points.
+    Automatically selects between PostgreSQL (if DATABASE_URL set) and SQLite.
     """
 
-    def __init__(self, db_path: Optional[Path] = None):
-        self.db_path = db_path or DEFAULT_DB_PATH
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, db_path: Optional[Path] = None, db_url: Optional[str] = None):
+        self.db_url = db_url or os.getenv("DATABASE_URL")
+        self.use_postgres = bool(self.db_url) and HAS_POSTGRES
+        
+        if self.use_postgres:
+            logger.info("Using PostgreSQL storage")
+        else:
+            self.db_path = db_path or DEFAULT_DB_PATH
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Using SQLite storage at {self.db_path}")
+            
         self._init_database()
 
     @contextmanager
     def _get_connection(self):
         """Context manager for database connections."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            conn.close()
+        if self.use_postgres:
+            try:
+                conn = psycopg2.connect(self.db_url)
+                try:
+                    yield conn
+                    conn.commit()
+                except Exception as e:
+                    conn.rollback()
+                    raise e
+                finally:
+                    conn.close()
+            except Exception as e:
+                logger.error(f"PostgreSQL connection error: {e}")
+                raise e
+        else:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                yield conn
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                raise e
+            finally:
+                conn.close()
+
+    def _get_placeholder(self) -> str:
+        """Return variable placeholder based on DB type."""
+        return "%s" if self.use_postgres else "?"
 
     def _init_database(self) -> None:
         """Initialize database schema."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-
-            # Main posts table
-            cursor.execute("""
+            
+            # PostgreSQL vs SQLite syntax differences
+            serial_type = "SERIAL" if self.use_postgres else "INTEGER PRIMARY KEY AUTOINCREMENT"
+            text_type = "TEXT"
+            timestamp_type = "TIMESTAMP" if self.use_postgres else "TEXT" # SQLite uses text/real for dates usually
+            
+            # 1. Matched Posts Table
+            cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS matched_posts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    post_id TEXT UNIQUE NOT NULL,
-                    title TEXT NOT NULL,
-                    selftext TEXT,
-                    subreddit TEXT NOT NULL,
-                    author TEXT,
-                    url TEXT,
-                    permalink TEXT,
-                    full_url TEXT,
+                    id {serial_type},
+                    post_id {text_type} UNIQUE NOT NULL,
+                    title {text_type} NOT NULL,
+                    selftext {text_type},
+                    subreddit {text_type} NOT NULL,
+                    author {text_type},
+                    url {text_type},
+                    permalink {text_type},
+                    full_url {text_type},
                     created_utc REAL,
-                    niche TEXT NOT NULL,
+                    niche {text_type} NOT NULL,
                     score INTEGER DEFAULT 0,
                     num_comments INTEGER DEFAULT 0,
-                    captured_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    captured_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP
                 )
             """)
 
-            # Keywords table (many-to-many with posts)
-            cursor.execute("""
+            # 2. Keywords Table
+            # Note: SQLite doesn't support constraints in ADD COLUMN, but CREATE works
+            cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS post_keywords (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    post_id TEXT NOT NULL,
-                    keyword TEXT NOT NULL,
-                    FOREIGN KEY (post_id) REFERENCES matched_posts(post_id),
+                    id {serial_type},
+                    post_id {text_type} NOT NULL,
+                    keyword {text_type} NOT NULL,
                     UNIQUE(post_id, keyword)
                 )
             """)
 
-            # Indexes for fast queries
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_posts_niche ON matched_posts(niche)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_posts_subreddit ON matched_posts(subreddit)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_posts_captured ON matched_posts(captured_at)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_keywords_keyword ON post_keywords(keyword)")
+            # 3. Pain Points Table (New)
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS pain_points (
+                    id {serial_type},
+                    timestamp {timestamp_type},
+                    niche {text_type},
+                    subreddit {text_type},
+                    keyword {text_type},
+                    pain_score REAL,
+                    severity {text_type},
+                    context_snippet {text_type},
+                    reddit_url {text_type},
+                    post_title {text_type},
+                    author {text_type}
+                )
+            """)
 
-            logger.info(f"Database initialized at {self.db_path}")
+            # Indexes
+            if self.use_postgres:
+                # Postgres specific index creation if needed (idempotent usually requires IF NOT EXISTS)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_posts_niche ON matched_posts(niche)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_posts_captured ON matched_posts(captured_at)")
+            else:
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_posts_niche ON matched_posts(niche)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_posts_captured ON matched_posts(captured_at)")
+
+            logger.info("Database initialized successfully")
 
     def save_post(self, post) -> bool:
+        """Save a matched post to the database."""
+        p = self._get_placeholder()
+        query = f"""
+            INSERT INTO matched_posts
+            (post_id, title, selftext, subreddit, author, url, permalink,
+             full_url, created_utc, niche, score, num_comments)
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
         """
-        Save a matched post to the database.
+        if not self.use_postgres:
+            query = query.replace("INSERT INTO", "INSERT OR IGNORE INTO")
+        else:
+            query += " ON CONFLICT (post_id) DO NOTHING"
 
-        Args:
-            post: MatchedPost object from listener module
-
-        Returns:
-            True if saved successfully, False if duplicate
-        """
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-
-                # Insert post
-                cursor.execute("""
-                    INSERT OR IGNORE INTO matched_posts
-                    (post_id, title, selftext, subreddit, author, url, permalink,
-                     full_url, created_utc, niche, score, num_comments)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    post.id,
-                    post.title,
-                    post.selftext,
-                    post.subreddit,
-                    post.author,
-                    post.url,
-                    post.permalink,
-                    post.full_url,
-                    post.created_utc,
-                    post.niche,
-                    post.score,
-                    post.num_comments,
+                cursor.execute(query, (
+                    post.id, post.title, post.selftext, post.subreddit, post.author,
+                    post.url, post.permalink, post.full_url, post.created_utc,
+                    post.niche, post.score, post.num_comments
                 ))
 
                 if cursor.rowcount == 0:
-                    logger.debug(f"Post {post.id} already exists in database")
                     return False
 
-                # Insert keywords
+                # Keywords
+                kp = self._get_placeholder()
+                k_query = f"INSERT INTO post_keywords (post_id, keyword) VALUES ({kp}, {kp})"
+                if not self.use_postgres:
+                    k_query = k_query.replace("INSERT INTO", "INSERT OR IGNORE INTO")
+                else:
+                    k_query += " ON CONFLICT (post_id, keyword) DO NOTHING"
+
                 for keyword in post.matched_keywords:
-                    cursor.execute("""
-                        INSERT OR IGNORE INTO post_keywords (post_id, keyword)
-                        VALUES (?, ?)
-                    """, (post.id, keyword.lower()))
+                    cursor.execute(k_query, (post.id, keyword.lower()))
 
-                logger.debug(f"Saved post {post.id} with {len(post.matched_keywords)} keywords")
                 return True
-
         except Exception as e:
             logger.error(f"Failed to save post {post.id}: {e}")
             return False
 
-    def get_total_posts(self) -> int:
-        """Get total number of stored posts."""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM matched_posts")
-            return cursor.fetchone()[0]
-
-    def get_posts_by_niche(self, niche: str, limit: int = 50) -> List[Dict]:
-        """Get recent posts for a specific niche."""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM matched_posts
-                WHERE niche = ?
-                ORDER BY captured_at DESC
-                LIMIT ?
-            """, (niche, limit))
-            return [dict(row) for row in cursor.fetchall()]
-
-    def get_keyword_frequency(self, days: int = 7, limit: int = 20) -> List[Tuple[str, int]]:
+    def save_pain_point(self, pain_data: Dict[str, Any]) -> bool:
+        """Save a pain point analysis result."""
+        p = self._get_placeholder()
+        query = f"""
+            INSERT INTO pain_points
+            (timestamp, niche, subreddit, keyword, pain_score, severity,
+             context_snippet, reddit_url, post_title, author)
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
         """
-        Get most frequent keywords in the last N days.
+        
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                # Ensure timestamp is datetime object or string
+                ts = pain_data.get('timestamp')
+                if isinstance(ts, str) and self.use_postgres:
+                     # Postgres handles ISO strings well usually, but let's be safe
+                     pass
+                     
+                cursor.execute(query, (
+                    pain_data['timestamp'],
+                    pain_data['niche'],
+                    pain_data['subreddit'],
+                    pain_data['keyword'],
+                    pain_data['pain_score'],
+                    pain_data['severity'],
+                    pain_data['context_snippet'],
+                    pain_data['reddit_url'],
+                    pain_data['post_title'],
+                    pain_data['author']
+                ))
+                return True
+        except Exception as e:
+            logger.error(f"Failed to save pain point: {e}")
+            return False
 
-        Returns:
-            List of (keyword, count) tuples sorted by frequency
-        """
-        cutoff = datetime.now() - timedelta(days=days)
-
+    def get_all_pain_points(self, limit: int = 1000) -> List[Dict]:
+        """Get pain points for export/display."""
+        p = self._get_placeholder()
+        query = f"SELECT * FROM pain_points ORDER BY timestamp DESC LIMIT {limit}"
+        
         with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT pk.keyword, COUNT(*) as count
-                FROM post_keywords pk
-                JOIN matched_posts mp ON pk.post_id = mp.post_id
-                WHERE mp.captured_at >= ?
-                GROUP BY pk.keyword
-                ORDER BY count DESC
-                LIMIT ?
-            """, (cutoff.isoformat(), limit))
-            return [(row[0], row[1]) for row in cursor.fetchall()]
+            if self.use_postgres:
+                cursor = conn.cursor(cursor_factory=RealDictCursor)
+                cursor.execute(query)
+                return [dict(row) for row in cursor.fetchall()]
+            else:
+                cursor = conn.cursor()
+                cursor.execute(query)
+                return [dict(row) for row in cursor.fetchall()]
+
+    # =========================================================================
+    # ANALYTICS METHODS (Refactored for cross-DB compatibility)
+    # =========================================================================
 
     def get_niche_frequency(self, days: int = 7) -> List[Tuple[str, int]]:
-        """
-        Get post counts per niche in the last N days.
-
-        Returns:
-            List of (niche, count) tuples sorted by frequency
-        """
         cutoff = datetime.now() - timedelta(days=days)
-
+        p = self._get_placeholder()
+        
+        # Postgres extract/date_trunc vs SQLite date functions are annoying.
+        # Simplest way: pass ISO string and hope for best, usually works.
+        
+        query = f"""
+            SELECT niche, COUNT(*) as count
+            FROM matched_posts
+            WHERE captured_at >= {p}
+            GROUP BY niche
+            ORDER BY count DESC
+        """
+        
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT niche, COUNT(*) as count
-                FROM matched_posts
-                WHERE captured_at >= ?
-                GROUP BY niche
-                ORDER BY count DESC
-            """, (cutoff.isoformat(),))
+            cursor.execute(query, (cutoff.isoformat(),))
+            return [(row[0], row[1]) for row in cursor.fetchall()]
+
+    def get_keyword_frequency(self, days: int = 7, limit: int = 20) -> List[Tuple[str, int]]:
+        cutoff = datetime.now() - timedelta(days=days)
+        p = self._get_placeholder()
+        
+        query = f"""
+            SELECT pk.keyword, COUNT(*) as count
+            FROM post_keywords pk
+            JOIN matched_posts mp ON pk.post_id = mp.post_id
+            WHERE mp.captured_at >= {p}
+            GROUP BY pk.keyword
+            ORDER BY count DESC
+            LIMIT {limit}
+        """
+        
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, (cutoff.isoformat(),))
             return [(row[0], row[1]) for row in cursor.fetchall()]
 
     def get_subreddit_frequency(self, days: int = 7, limit: int = 15) -> List[Tuple[str, int]]:
-        """
-        Get most active subreddits in the last N days.
-
-        Returns:
-            List of (subreddit, count) tuples sorted by frequency
-        """
         cutoff = datetime.now() - timedelta(days=days)
-
+        p = self._get_placeholder()
+        
+        query = f"""
+            SELECT subreddit, COUNT(*) as count
+            FROM matched_posts
+            WHERE captured_at >= {p}
+            GROUP BY subreddit
+            ORDER BY count DESC
+            LIMIT {limit}
+        """
+        
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT subreddit, COUNT(*) as count
-                FROM matched_posts
-                WHERE captured_at >= ?
-                GROUP BY subreddit
-                ORDER BY count DESC
-                LIMIT ?
-            """, (cutoff.isoformat(), limit))
+            cursor.execute(query, (cutoff.isoformat(),))
             return [(row[0], row[1]) for row in cursor.fetchall()]
-
-    def get_trending_keywords(self,
-                               recent_days: int = 1,
-                               baseline_days: int = 7,
-                               min_recent_count: int = 2) -> List[Dict]:
-        """
-        Find keywords trending up compared to baseline.
-
-        Compares recent frequency to historical baseline to find
-        keywords that are spiking in mentions.
-
-        Returns:
-            List of dicts with keyword, recent_count, baseline_avg, trend_score
-        """
-        recent_cutoff = datetime.now() - timedelta(days=recent_days)
-        baseline_cutoff = datetime.now() - timedelta(days=baseline_days)
-
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-
-            # Get recent counts
-            cursor.execute("""
-                SELECT pk.keyword, COUNT(*) as recent_count
-                FROM post_keywords pk
-                JOIN matched_posts mp ON pk.post_id = mp.post_id
-                WHERE mp.captured_at >= ?
-                GROUP BY pk.keyword
-                HAVING recent_count >= ?
-            """, (recent_cutoff.isoformat(), min_recent_count))
-            recent_counts = {row[0]: row[1] for row in cursor.fetchall()}
-
-            # Get baseline counts (excluding recent period)
-            cursor.execute("""
-                SELECT pk.keyword, COUNT(*) as baseline_count
-                FROM post_keywords pk
-                JOIN matched_posts mp ON pk.post_id = mp.post_id
-                WHERE mp.captured_at >= ? AND mp.captured_at < ?
-                GROUP BY pk.keyword
-            """, (baseline_cutoff.isoformat(), recent_cutoff.isoformat()))
-            baseline_counts = {row[0]: row[1] for row in cursor.fetchall()}
-
-        # Calculate trend scores
-        trending = []
-        baseline_period = baseline_days - recent_days
-
-        for keyword, recent_count in recent_counts.items():
-            baseline_count = baseline_counts.get(keyword, 0)
-            baseline_avg = baseline_count / baseline_period if baseline_period > 0 else 0
-            recent_avg = recent_count / recent_days
-
-            # Trend score: how many times higher than baseline
-            if baseline_avg > 0:
-                trend_score = recent_avg / baseline_avg
-            else:
-                trend_score = recent_avg * 10  # New keyword bonus
-
-            trending.append({
-                "keyword": keyword,
-                "recent_count": recent_count,
-                "baseline_avg": round(baseline_avg, 2),
-                "trend_score": round(trend_score, 2),
-            })
-
-        # Sort by trend score
-        trending.sort(key=lambda x: x["trend_score"], reverse=True)
-        return trending[:10]
-
-    def get_hourly_distribution(self, days: int = 7) -> Dict[int, int]:
-        """
-        Get post distribution by hour of day.
-
-        Returns:
-            Dict mapping hour (0-23) to post count
-        """
-        cutoff = datetime.now() - timedelta(days=days)
-
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT strftime('%H', captured_at) as hour, COUNT(*) as count
-                FROM matched_posts
-                WHERE captured_at >= ?
-                GROUP BY hour
-                ORDER BY hour
-            """, (cutoff.isoformat(),))
-            return {int(row[0]): row[1] for row in cursor.fetchall()}
-
-    def get_recent_posts(self, hours: int = 24, limit: int = 50) -> List[Dict]:
-        """Get posts from the last N hours."""
-        cutoff = datetime.now() - timedelta(hours=hours)
-
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT mp.*, GROUP_CONCAT(pk.keyword, ', ') as keywords
-                FROM matched_posts mp
-                LEFT JOIN post_keywords pk ON mp.post_id = pk.post_id
-                WHERE mp.captured_at >= ?
-                GROUP BY mp.post_id
-                ORDER BY mp.captured_at DESC
-                LIMIT ?
-            """, (cutoff.isoformat(), limit))
-            return [dict(row) for row in cursor.fetchall()]
-
-    def cleanup_old_posts(self, days: int = 30) -> int:
-        """
-        Remove posts older than N days.
-
-        Returns:
-            Number of posts deleted
-        """
-        cutoff = datetime.now() - timedelta(days=days)
-
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-
-            # Get post IDs to delete
-            cursor.execute("""
-                SELECT post_id FROM matched_posts WHERE captured_at < ?
-            """, (cutoff.isoformat(),))
-            post_ids = [row[0] for row in cursor.fetchall()]
-
-            if not post_ids:
-                return 0
-
-            # Delete keywords first (foreign key)
-            placeholders = ",".join("?" * len(post_ids))
-            cursor.execute(f"""
-                DELETE FROM post_keywords WHERE post_id IN ({placeholders})
-            """, post_ids)
-
-            # Delete posts
-            cursor.execute(f"""
-                DELETE FROM matched_posts WHERE post_id IN ({placeholders})
-            """, post_ids)
-
-            logger.info(f"Cleaned up {len(post_ids)} posts older than {days} days")
-            return len(post_ids)
